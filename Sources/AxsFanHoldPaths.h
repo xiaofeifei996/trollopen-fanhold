@@ -18,10 +18,7 @@ static inline NSString *axs_fanhold_resourcePath(NSString *rootfsPath) {
 
 static inline NSString *axs_fanhold_preferencesPath(void) {
     NSString *path = @"/var/mobile/Library/Preferences/com.axs.fanhold.plist";
-#ifdef THEOS_PACKAGE_SCHEME_ROOTHIDE
-    return jbroot(path);
-#else
-    // Mobile user preferences do not use the rootless installation prefix.
+// Mobile user preferences are outside the jailbreak root on both RootHide
+// and rootless setups; do not pass this path through jbroot/ROOT_PATH_NS.
     return path;
-#endif
 }
