@@ -27,6 +27,18 @@
             <key>min</key><real>0.1</real>
             <key>max</key><real>2.0</real>
         </dict>
+        <dict>
+            <key>cell</key><string>PSGroupCell</string>
+            <key>label</key><string>排查</string>
+            <key>footerText</key><string>开启后会把插件运行情况写到 /var/mobile/Library/Logs/AxsFanHold.log，用于定位问题。日常使用可关闭。</string>
+        </dict>
+        <dict>
+            <key>cell</key><string>PSSwitchCell</string>
+            <key>label</key><string>调试日志</string>
+            <key>key</key><string>debugLog</string>
+            <key>defaults</key><string>com.axs.fanhold</string>
+            <key>default</key><false/>
+        </dict>
     </array>
 </dict>
 </plist>

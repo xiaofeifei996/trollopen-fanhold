@@ -65,6 +65,11 @@ static void axs_fanhold_preferencesDidChange(CFNotificationCenterRef center, voi
     return 0.4;
 }
 
+- (BOOL)axs_fanhold_isDebugLogEnabled {
+    id value = [self axs_fanhold_valueForKey:@"debugLog" defaultValue:@(NO)];
+    return [value isKindOfClass:[NSNumber class]] ? [value boolValue] : NO;
+}
+
 - (void)dealloc {
     CFNotificationCenterRemoveEveryObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                             (__bridge const void *)self);
