@@ -79,6 +79,14 @@ jobs:
           brew install ldid dpkg xz
           echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
 
+      - name: Add RootHide patch marker
+        if: matrix.build_variant == 'roothide'
+        run: |
+          mkdir -p layout/Library/MobileSubstrate/DynamicLibraries
+          ln -sfn /usr/lib/DynamicPatches/AutoPatches.dylib \
+            layout/Library/MobileSubstrate/DynamicLibraries/AxsFanHold.dylib.roothidepatch
+          ls -l layout/Library/MobileSubstrate/DynamicLibraries/AxsFanHold.dylib.roothidepatch
+
       - name: Build Package
         run: |
           sh build.sh "${{ matrix.build_variant }}"
