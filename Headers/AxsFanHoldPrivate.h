@@ -15,6 +15,8 @@
 // 属性通过 KVC / objc_msgSend 读取，不依赖被混淆的 ivar 偏移。
 
 // 扇形菜单视图本体：持有按钮、条目与当前高亮项。
+// buttonFinalCenters 是展开后各按钮的中心点（NSValue 包装的 CGPoint，菜单坐标系），
+// 与 items 顺序一一对应。
 @interface TOJBClass004 : UIView
 @property (nonatomic, copy) NSArray *buttons;
 @property (nonatomic, copy) NSArray *items;
@@ -23,6 +25,7 @@
 @property (nonatomic, assign, getter=isFullyRevealed) BOOL fullyRevealed;
 @property (nonatomic, assign) CGPoint startLocation;
 @property (nonatomic, assign) double initialRadius;
+@property (nonatomic, assign) double iconSize;
 @end
 
 // 菜单条目模型。itemKind: 0=应用 1=内置动作 2=快捷指令 3=URL
@@ -35,4 +38,5 @@
 
 // 驱动扇形菜单的手势识别器；-TOJBMETHOD081: 是它的状态机回调。
 @interface TOJBClass041 : UIGestureRecognizer
+@property (nonatomic, assign) BOOL trackingGestureActive;
 @end

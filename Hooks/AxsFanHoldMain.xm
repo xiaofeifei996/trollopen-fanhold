@@ -63,6 +63,48 @@ static id axs_fanhold_find_menu_view(id gesture) {
     return nil;
 }
 
+/// 手指停在哪个条目上。
+/// 优先用 TrollOpen 自己维护的 currentHighlightedItem；它只在手指移动时才更新，
+/// 按住不动可能为空，因此退化为按 buttonFinalCenters 就近匹配。
+static id axs_fanhold_item_at_gesture(id menu, id gesture) {
+    id highlighted = axs_fanhold_send(menu, "currentHighlightedItem");
+    if (highlighted) return highlighted;
+
+    NSArray *items = axs_fanhold_send(menu, "items");
+    NSArray *centers = axs_fanhold_send(menu, "buttonFinalCenters");
+    if (![items isKindOfClass:[NSArray class]] || items.count == 0) return nil;
+    if (![centers isKindOfClass:[NSArray class]] || centers.count != items.count) return nil;
+
+    CGPoint location = ((CGPoint (*)(id, SEL, id))objc_msgSend)(
+        gesture, sel_registerName("locationInView:"), menu);
+
+    double iconSize = 0;
+    SEL iconSizeSel = sel_registerName("iconSize");
+    if ([menu respondsToSelector:iconSizeSel]) {
+        iconSize = ((double (*)(id, SEL))objc_msgSend)(menu, iconSizeSel);
+    }
+    if (iconSize <= 0) iconSize = 44.0;
+    // 命中半径取按钮尺寸的一半，再留一点余量。
+    double limit = iconSize * 0.5 + 8.0;
+
+    NSInteger bestIndex = NSNotFound;
+    double bestDistance = limit * limit;
+    for (NSUInteger i = 0; i < centers.count; i++) {
+        id raw = centers[i];
+        if (![raw isKindOfClass:[NSValue class]]) continue;
+        CGPoint center = [raw CGPointValue];
+        double dx = location.x - center.x;
+        double dy = location.y - center.y;
+        double distance = dx * dx + dy * dy;
+        if (distance <= bestDistance) {
+            bestDistance = distance;
+            bestIndex = (NSInteger)i;
+        }
+    }
+    if (bestIndex == NSNotFound) return nil;
+    return items[bestIndex];
+}
+
 #pragma mark - 执行条目
 
 static void axs_fanhold_dismiss_menu(id menu) {
@@ -138,7 +180,7 @@ static void axs_fanhold_cancel_timer(UIGestureRecognizer *gesture) {
     if (!menu) return;
     if (!axs_fanhold_readBool(menu, "fullyRevealed")) return;
 
-    id item = axs_fanhold_send(menu, "currentHighlightedItem");
+    id item = axs_fanhold_item_at_gesture(menu, gesture);
     if (!item) return;
     if (axs_fanhold_readLongLong(item, "itemKind") != AxsFanHoldItemKindShortcut) return;
 
