@@ -2,7 +2,6 @@
 #import <substrate.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
-#import <stdarg.h>
 #import <unistd.h>
 #import "AxsFanHoldConfig.h"
 #import "AxsFanHoldPrivate.h"
@@ -11,82 +10,42 @@
 // TrollOpen 扇形菜单：让“快捷指令”条目按住不松手即可运行。
 //
 // 真机实测（Frida，iOS 16.4 / arm64）确认的事实：
-//  · 扇形菜单视图是 TOJBClass004，父链 TOJBClass004 > TOJBR0 > TOJBW0。
+//  · 菜单视图是 TOJBClass004，父链 TOJBClass004 > TOJBR0 > TOJBW0。
 //  · 手势识别器 TOJBClass041 的回调 -TOJBMETHOD081: 确实被调用，
 //    状态序列 1(Began) → 2(Changed) → 3(Ended)。
-//  · trackingGestureActive 自 Began 起恒为 1，不能用来判断手指是否移动。
-//  · 菜单持有 items / buttonFinalCenters / iconSize，currentHighlightedItem 随指尖更新。
-//  · 手势的 view 父链里找不到 TOJBClass004，所以菜单实例必须另外捕获。
+//  · trackingGestureActive 自 Began 起恒为 1，不能用于判断手指是否移动。
+//  · fullyRevealed 实测恒为 0，同样不能作为“菜单已展开”的判据。
+//  · 手势的 view 父链里没有菜单，菜单实例要在 didMoveToSuperview 时捕获。
+//  · items 是 NSDictionary 数组，键为 type/identifier/title/icon/stateful。
+//    type: 0=应用 1=内置动作 2=快捷指令 3=URL
 //
-// 做法：捕获菜单实例后，手势期间轮询指尖位置；
-// 指尖静止满 holdDuration、菜单已展开、指尖下是快捷指令条目 → 直接运行该指令。
+// 做法：手势期间轮询指尖位置，静止满 holdDuration 且指尖下是 type==2 的条目，
+// 就按点击流程运行该快捷指令。手指一动就重新计时，不影响原有拖动选择。
 
 static NSString *const kAxsFanHoldMenuClassName = @"TOJBClass004";
 static NSString *const kAxsFanHoldGestureClassName = @"TOJBClass041";
 static NSString *const kAxsFanHoldGestureCallback = @"TOJBMETHOD081:";
 
-static const long long AxsFanHoldItemKindShortcut = 2;
+static const NSInteger AxsFanHoldItemTypeShortcut = 2;
 static const CGFloat AxsFanHoldMoveTolerance = 3.0;
 static const NSTimeInterval AxsFanHoldTickInterval = 0.05;
 
-#pragma mark - 取值辅助
-
-static id axs_fanhold_send(id object, const char *selectorName) {
-    if (!object) return nil;
-    SEL sel = sel_registerName(selectorName);
-    if (![object respondsToSelector:sel]) return nil;
-    return ((id (*)(id, SEL))objc_msgSend)(object, sel);
-}
-
-static BOOL axs_fanhold_readBool(id object, const char *selectorName) {
-    if (!object) return NO;
-    SEL sel = sel_registerName(selectorName);
-    if (![object respondsToSelector:sel]) return NO;
-    return ((BOOL (*)(id, SEL))objc_msgSend)(object, sel) != NO;
-}
-
-static long long axs_fanhold_readLongLong(id object, const char *selectorName) {
-    if (!object) return -1;
-    SEL sel = sel_registerName(selectorName);
-    if (![object respondsToSelector:sel]) return -1;
-    return ((long long (*)(id, SEL))objc_msgSend)(object, sel);
-}
-
-static double axs_fanhold_readDouble(id object, const char *selectorName) {
-    if (!object) return 0;
-    SEL sel = sel_registerName(selectorName);
-    if (![object respondsToSelector:sel]) return 0;
-    return ((double (*)(id, SEL))objc_msgSend)(object, sel);
-}
-
-static CGPoint axs_fanhold_location_in(id gesture, UIView *view) {
-    if (!view) return CGPointZero;
-    return ((CGPoint (*)(id, SEL, id))objc_msgSend)(gesture,
-                                                    sel_registerName("locationInView:"), view);
-}
-
 #pragma mark - 菜单实例捕获
 
-// 手势的 view 父链里没有菜单，只能从菜单自身创建时记下来。
 static __weak UIView *axs_fanhold_current_menu = nil;
 
-static void axs_fanhold_capture_menu(UIView *menu) {
-    if (!menu) return;
-    axs_fanhold_current_menu = menu;
-}
-
-/// 兜底：在窗口子树里找同时具备 items / buttonFinalCenters 的视图。
 static BOOL axs_fanhold_is_menu_view(id view) {
     if (![view isKindOfClass:[UIView class]]) return NO;
-    return [view respondsToSelector:sel_registerName("buttonFinalCenters")] &&
-           [view respondsToSelector:sel_registerName("items")] &&
-           [view respondsToSelector:sel_registerName("currentHighlightedItem")];
+    return [view respondsToSelector:@selector(buttonFinalCenters)] &&
+           [view respondsToSelector:@selector(items)] &&
+           [view respondsToSelector:@selector(currentHighlightedItem)];
 }
 
 static id axs_fanhold_search_subtree(id view, int depth) {
     if (!view || depth < 0) return nil;
     if (axs_fanhold_is_menu_view(view)) return view;
-    NSArray *subviews = axs_fanhold_send(view, "subviews");
+    NSArray *subviews = nil;
+    if ([view respondsToSelector:@selector(subviews)]) subviews = [view subviews];
     if (![subviews isKindOfClass:[NSArray class]]) return nil;
     for (id sub in subviews) {
         id found = axs_fanhold_search_subtree(sub, depth - 1);
@@ -95,20 +54,42 @@ static id axs_fanhold_search_subtree(id view, int depth) {
     return nil;
 }
 
-static UIView *axs_fanhold_resolve_menu(id gesture) {
+static UIView *axs_fanhold_resolve_menu(UIGestureRecognizer *gesture) {
     UIView *menu = axs_fanhold_current_menu;
-    if (menu && axs_fanhold_is_menu_view(menu)) return menu;
+    if (menu && axs_fanhold_is_menu_view(menu) && menu.superview) return menu;
 
-    UIView *view = axs_fanhold_send(gesture, "view");
-    UIView *found = axs_fanhold_search_subtree(axs_fanhold_send(view, "window"), 10);
-    if (found) {
-        axs_fanhold_capture_menu(found);
-        return found;
-    }
-    return nil;
+    UIView *found = axs_fanhold_search_subtree(gesture.view.window, 10);
+    if (found) axs_fanhold_current_menu = found;
+    return found;
 }
 
-#pragma mark - 命中条目
+#pragma mark - 条目判定
+
+/// 条目是 NSDictionary（键 type/identifier/title/icon）；兼容对象形式的 itemKind。
+static NSInteger axs_fanhold_item_type(id item) {
+    if (!item) return -1;
+    if ([item isKindOfClass:[NSDictionary class]]) {
+        id value = ((NSDictionary *)item)[@"type"];
+        return [value isKindOfClass:[NSNumber class]] ? [value integerValue] : -1;
+    }
+    if ([item respondsToSelector:@selector(itemKind)]) {
+        return (NSInteger)((long long (*)(id, SEL))objc_msgSend)(
+            item, sel_registerName("itemKind"));
+    }
+    return -1;
+}
+
+static NSString *axs_fanhold_item_identifier(id item) {
+    if (!item) return nil;
+    if ([item isKindOfClass:[NSDictionary class]]) {
+        id value = ((NSDictionary *)item)[@"identifier"];
+        return [value isKindOfClass:[NSString class]] ? value : nil;
+    }
+    SEL sel = sel_registerName("identifier");
+    if (![item respondsToSelector:sel]) return nil;
+    id value = ((id (*)(id, SEL))objc_msgSend)(item, sel);
+    return [value isKindOfClass:[NSString class]] ? value : nil;
+}
 
 static BOOL axs_fanhold_looks_like_workflow_identifier(NSString *identifier) {
     if (identifier.length != 36) return NO;
@@ -121,23 +102,25 @@ static BOOL axs_fanhold_looks_like_workflow_identifier(NSString *identifier) {
 
 static BOOL axs_fanhold_item_is_shortcut(id item) {
     if (!item) return NO;
-    if (axs_fanhold_readLongLong(item, "itemKind") == AxsFanHoldItemKindShortcut) return YES;
-    id identifier = axs_fanhold_send(item, "identifier");
-    return [identifier isKindOfClass:[NSString class]] &&
-           axs_fanhold_looks_like_workflow_identifier(identifier);
+    if (axs_fanhold_item_type(item) == AxsFanHoldItemTypeShortcut) return YES;
+    // type 缺失时用 identifier 形态兜底。
+    NSString *identifier = axs_fanhold_item_identifier(item);
+    return identifier && axs_fanhold_looks_like_workflow_identifier(identifier);
 }
 
-/// 指尖下的条目：优先高亮项，为空时按按钮中心点就近匹配。
+/// 指尖下的条目：优先高亮项，取不到时按按钮中心点就近匹配。
 static id axs_fanhold_item_at_point(UIView *menu, CGPoint location) {
-    id highlighted = axs_fanhold_send(menu, "currentHighlightedItem");
+    id highlighted = [menu respondsToSelector:@selector(currentHighlightedItem)]
+                   ? [menu valueForKey:@"currentHighlightedItem"] : nil;
     if (highlighted) return highlighted;
 
-    NSArray *items = axs_fanhold_send(menu, "items");
-    NSArray *centers = axs_fanhold_send(menu, "buttonFinalCenters");
+    NSArray *items = [menu valueForKey:@"items"];
+    NSArray *centers = [menu valueForKey:@"buttonFinalCenters"];
     if (![items isKindOfClass:[NSArray class]] || items.count == 0) return nil;
     if (![centers isKindOfClass:[NSArray class]] || centers.count != items.count) return nil;
 
-    double iconSize = axs_fanhold_readDouble(menu, "iconSize");
+    double iconSize = 0;
+    if ([menu respondsToSelector:@selector(iconSize)]) iconSize = [menu iconSize];
     if (iconSize <= 0) iconSize = 44.0;
     double limit = iconSize * 0.5 + 10.0;
 
@@ -173,8 +156,8 @@ static void axs_fanhold_dismiss_menu(UIView *menu) {
 }
 
 static void axs_fanhold_run_item(UIView *menu, id item) {
-    id identifier = axs_fanhold_send(item, "identifier");
-    if (![identifier isKindOfClass:[NSString class]] || [identifier length] == 0) return;
+    NSString *identifier = axs_fanhold_item_identifier(item);
+    if (identifier.length == 0) return;
 
     UIImpactFeedbackGenerator *feedback =
         [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
@@ -182,8 +165,10 @@ static void axs_fanhold_run_item(UIView *menu, id item) {
     [feedback impactOccurred];
 
     // 清掉高亮，避免松手时 TrollOpen 再执行一次同一项。
-    ((void (*)(id, SEL, id))objc_msgSend)(menu,
-        sel_registerName("setCurrentHighlightedItem:"), nil);
+    if ([menu respondsToSelector:@selector(setCurrentHighlightedItem:)]) {
+        ((void (*)(id, SEL, id))objc_msgSend)(menu,
+            sel_registerName("setCurrentHighlightedItem:"), nil);
+    }
     axs_fanhold_dismiss_menu(menu);
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)),
@@ -217,6 +202,7 @@ static void axs_fanhold_run_item(UIView *menu, id item) {
                                        selector:@selector(axs_fanhold_tick)
                                        userInfo:nil
                                         repeats:YES];
+    // CommonModes：拖动期间 RunLoop 处于 tracking 模式也能继续走。
     [[NSRunLoop mainRunLoop] addTimer:self.timer forMode:NSRunLoopCommonModes];
 }
 
@@ -231,7 +217,7 @@ static void axs_fanhold_run_item(UIView *menu, id item) {
     UIGestureRecognizer *gesture = self.gesture;
     if (!gesture) { [self axs_fanhold_stop]; return; }
 
-    long long state = axs_fanhold_readLongLong(gesture, "state");
+    UIGestureRecognizerState state = gesture.state;
     if (state != UIGestureRecognizerStateBegan && state != UIGestureRecognizerStateChanged) {
         [self axs_fanhold_stop];
         return;
@@ -246,17 +232,11 @@ static void axs_fanhold_run_item(UIView *menu, id item) {
     NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
     if (!menu) {
         self.stillSince = now;
-        return;
-    }
-
-    // 菜单仍在展开动画里：静止计时重新开始。
-    if (!axs_fanhold_readBool(menu, "fullyRevealed")) {
-        self.stillSince = now;
         self.lastLocation = CGPointMake(-CGFLOAT_MAX, -CGFLOAT_MAX);
         return;
     }
 
-    CGPoint location = axs_fanhold_location_in(gesture, menu);
+    CGPoint location = [gesture locationInView:menu];
     CGFloat dx = location.x - self.lastLocation.x;
     CGFloat dy = location.y - self.lastLocation.y;
     if (dx * dx + dy * dy > AxsFanHoldMoveTolerance * AxsFanHoldMoveTolerance) {
@@ -310,7 +290,7 @@ static void axs_fanhold_replaced_gesture_update(id self, SEL _cmd, id gestureRec
         AxsFanHoldWatcher *watcher = [watchers objectForKey:gesture];
         if (watcher.fired) {
             UIView *menu = axs_fanhold_current_menu;
-            if (menu) {
+            if (menu && [menu respondsToSelector:@selector(setCurrentHighlightedItem:)]) {
                 ((void (*)(id, SEL, id))objc_msgSend)(menu,
                     sel_registerName("setCurrentHighlightedItem:"), nil);
             }
@@ -346,7 +326,7 @@ static void (*axs_fanhold_orig_menu_did_move)(id, SEL);
 
 static void axs_fanhold_replaced_menu_did_move(id self, SEL _cmd) {
     if (axs_fanhold_orig_menu_did_move) axs_fanhold_orig_menu_did_move(self, _cmd);
-    if ([self isKindOfClass:[UIView class]]) axs_fanhold_capture_menu((UIView *)self);
+    if ([self isKindOfClass:[UIView class]]) axs_fanhold_current_menu = (UIView *)self;
 }
 
 static void axs_fanhold_install_hooks(void) {
