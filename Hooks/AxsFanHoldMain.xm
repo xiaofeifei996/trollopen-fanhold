@@ -146,17 +146,6 @@ static id axs_fanhold_item_at_point(UIView *menu, CGPoint location) {
 
 #pragma mark - 执行
 
-static void axs_fanhold_dismiss_menu(UIView *menu) {
-    UIWindow *window = menu.window;
-    if (!window) { menu.hidden = YES; return; }
-    [UIView animateWithDuration:0.18 animations:^{
-        window.alpha = 0.0;
-    } completion:^(BOOL finished) {
-        window.hidden = YES;
-        window.alpha = 1.0;
-    }];
-}
-
 static void axs_fanhold_run_item(UIView *menu, id item) {
     NSString *identifier = axs_fanhold_item_identifier(item);
     if (identifier.length == 0) return;
@@ -166,14 +155,15 @@ static void axs_fanhold_run_item(UIView *menu, id item) {
     [feedback prepare];
     [feedback impactOccurred];
 
-    // 清掉高亮，避免松手时 TrollOpen 再执行一次同一项。
+    // 只清空高亮，避免松手时 TrollOpen 再执行一次同一项。
+    // 不要隐藏窗口或菜单：TrollOpen 复用同一个窗口，隐藏后第二次呼出就再也看不见。
+    // 菜单本身会在手指抬起时由 TrollOpen 自己的 Ended 分支收起。
     if ([menu respondsToSelector:@selector(setCurrentHighlightedItem:)]) {
         ((void (*)(id, SEL, id))objc_msgSend)(menu,
             sel_registerName("setCurrentHighlightedItem:"), nil);
     }
-    axs_fanhold_dismiss_menu(menu);
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         [AxsFanHoldShortcutRunner axs_fanhold_runWorkflowIdentifier:identifier];
     });
@@ -328,7 +318,19 @@ static void (*axs_fanhold_orig_menu_did_move)(id, SEL);
 
 static void axs_fanhold_replaced_menu_did_move(id self, SEL _cmd) {
     if (axs_fanhold_orig_menu_did_move) axs_fanhold_orig_menu_did_move(self, _cmd);
-    if ([self isKindOfClass:[UIView class]]) axs_fanhold_current_menu = (UIView *)self;
+    if (![self isKindOfClass:[UIView class]]) return;
+
+    UIView *menu = (UIView *)self;
+    axs_fanhold_current_menu = menu;
+
+    // 自愈：旧版本隐藏过共享窗口，会导至第二次呼出菜单不可见。
+    UIWindow *window = menu.window;
+    if (window) {
+        if (window.hidden) window.hidden = NO;
+        if (window.alpha < 1.0) window.alpha = 1.0;
+    }
+    if (menu.hidden) menu.hidden = NO;
+    if (menu.alpha < 1.0) menu.alpha = 1.0;
 }
 
 static void axs_fanhold_install_hooks(void) {
