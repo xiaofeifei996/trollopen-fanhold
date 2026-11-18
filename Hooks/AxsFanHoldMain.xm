@@ -3,6 +3,7 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <stdarg.h>
+#import <unistd.h>
 #import "AxsFanHoldConfig.h"
 #import "AxsFanHoldPrivate.h"
 #import "AxsFanHoldShortcutRunner.h"
@@ -418,8 +419,19 @@ static void axs_fanhold_install_with_retry(int remaining) {
     });
 }
 
+static void axs_fanhold_write_load_marker(void) {
+    // This marker is deliberately independent of preferences and user logging.
+    NSString *path = @"/var/mobile/Documents/AxsFanHold-loaded.txt";
+    NSString *line = [NSString stringWithFormat:@"%@ pid=%d bundle=%@\n",
+                      [NSDate date], getpid(),
+                      [[NSBundle mainBundle] bundleIdentifier] ?: @"?"];
+    NSData *data = [line dataUsingEncoding:NSUTF8StringEncoding];
+    [data writeToFile:path atomically:YES];
+}
+
 %ctor {
     @autoreleasepool {
+        axs_fanhold_write_load_marker();
         [AxsFanHoldConfig axs_fanhold_shared];
         dispatch_async(dispatch_get_main_queue(), ^{
             axs_fanhold_install_with_retry(15);
