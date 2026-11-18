@@ -120,7 +120,9 @@ static id axs_fanhold_item_at_point(UIView *menu, CGPoint location) {
     if (![centers isKindOfClass:[NSArray class]] || centers.count != items.count) return nil;
 
     double iconSize = 0;
-    if ([menu respondsToSelector:@selector(iconSize)]) iconSize = [menu iconSize];
+    if ([menu respondsToSelector:@selector(iconSize)]) {
+        iconSize = [[menu valueForKey:@"iconSize"] doubleValue];
+    }
     if (iconSize <= 0) iconSize = 44.0;
     double limit = iconSize * 0.5 + 10.0;
 
