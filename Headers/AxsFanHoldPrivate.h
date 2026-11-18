@@ -10,13 +10,15 @@
 - (void)start;
 @end
 
-// ---- TrollOpen 扇形菜单（com.charlieleung.trollopenjb 2.0.1）----
-// 类名取自 TrollOpenJB.dylib 的 __objc_classlist。
-// 属性通过 KVC / objc_msgSend 读取，不依赖被混淆的 ivar 偏移。
-
-// 扇形菜单视图本体：持有按钮、条目与当前高亮项。
-// buttonFinalCenters 是展开后各按钮的中心点（NSValue 包装的 CGPoint，菜单坐标系），
-// 与 items 顺序一一对应。
+// ---- TrollOpen 扇形菜单（com.charlieleung.trollopenjb 2.0.1，真机实测确认）----
+//
+// 运行时实测结论（Frida，iOS 16.4 / arm64）：
+//  · 扇形菜单视图是 TOJBClass004，父链 TOJBClass004 > TOJBR0 > TOJBW0。
+//  · 手势识别器 TOJBClass041 挂在 TOJBW0 的子视图上，
+//    其回调 -TOJBMETHOD081: 确实被调用，序列为 state 1(Began) → 2(Changed) → 3(Ended)。
+//  · trackingGestureActive 实测自 Began 起恒为 1，不能用来判断“手指是否移动”。
+//  · 菜单持有 items(48) / buttonFinalCenters(48) / iconSize(38)，
+//    currentHighlightedItem 随指尖更新；执行条目的是 TOJBMETHOD043:/044:。
 @interface TOJBClass004 : UIView
 @property (nonatomic, copy) NSArray *buttons;
 @property (nonatomic, copy) NSArray *items;
@@ -36,7 +38,7 @@
 @property (nonatomic, copy) NSString *iconName;
 @end
 
-// 驱动扇形菜单的手势识别器；-TOJBMETHOD081: 是它的状态机回调。
+// 驱动扇形菜单的手势识别器。
 @interface TOJBClass041 : UIGestureRecognizer
 @property (nonatomic, assign) BOOL trackingGestureActive;
 @end
