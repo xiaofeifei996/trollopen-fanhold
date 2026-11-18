@@ -13,7 +13,7 @@
 //   位移 > 4pt 才把 trackingGestureActive 置 1 进入“拖动选择”；
 //   按住不动位移为 0，原逻辑直接返回，菜单既不收起也不执行任何条目。
 //
-// 做法：按下时（Began）启动一个自己的定时器，到点后确认
+// 做法：按下时（Began）启动一个定时器，到点后确认
 //   · 手势仍在进行、手指没有移动（trackingGestureActive == NO）
 //   · 菜单已完全展开
 //   · 当前高亮项是快捷指令（itemKind == 2）
@@ -96,10 +96,10 @@ static void axs_fanhold_run_item(id menu, id item) {
     });
 }
 
-#pragma mark - 长按定时器
+#pragma mark - 长按计时
 
-// 每次按压的定时器按手势识别器实例保存，手势结束时取消。
-static NSMapTable<UIGestureRecognizer *, dispatch_block_t> *axs_fanhold_timers(void) {
+// 每个手势识别器实例一个定时器，手势结束即取消。
+static NSMapTable<UIGestureRecognizer *, NSTimer *> *axs_fanhold_timers(void) {
     static NSMapTable *table;
     static dispatch_once_t once;
     dispatch_once(&once, ^{ table = [NSMapTable weakToStrongObjectsMapTable]; });
@@ -109,43 +109,57 @@ static NSMapTable<UIGestureRecognizer *, dispatch_block_t> *axs_fanhold_timers(v
 static void axs_fanhold_cancel_timer(UIGestureRecognizer *gesture) {
     if (!gesture) return;
     NSMapTable *timers = axs_fanhold_timers();
-    dispatch_block_t block = [timers objectForKey:gesture];
-    if (block) {
-        dispatch_block_cancel(block);
+    NSTimer *timer = [timers objectForKey:gesture];
+    if (timer) {
+        [timer invalidate];
         [timers removeObjectForKey:gesture];
     }
 }
 
+@interface AxsFanHoldTimerTarget : NSObject
+@property (nonatomic, weak) UIGestureRecognizer *gesture;
+- (void)axs_fanhold_fire;
+@end
+
+@implementation AxsFanHoldTimerTarget
+- (void)axs_fanhold_fire {
+    UIGestureRecognizer *gesture = self.gesture;
+    if (!gesture) return;
+    if (![[AxsFanHoldConfig axs_fanhold_shared] axs_fanhold_isEnabled]) return;
+
+    // 手势必须仍在进行中。
+    long long state = axs_fanhold_gesture_state(gesture);
+    if (state != UIGestureRecognizerStateBegan && state != UIGestureRecognizerStateChanged) return;
+
+    // 手指移动过就交给 TrollOpen 的拖动选择。
+    if (axs_fanhold_readBool(gesture, "trackingGestureActive")) return;
+
+    id menu = axs_fanhold_find_menu_view(gesture);
+    if (!menu) return;
+    if (!axs_fanhold_readBool(menu, "fullyRevealed")) return;
+
+    id item = axs_fanhold_send(menu, "currentHighlightedItem");
+    if (!item) return;
+    if (axs_fanhold_readLongLong(item, "itemKind") != AxsFanHoldItemKindShortcut) return;
+
+    axs_fanhold_cancel_timer(gesture);
+    axs_fanhold_run_item(menu, item);
+}
+@end
+
 static void axs_fanhold_schedule_timer(UIGestureRecognizer *gesture) {
     axs_fanhold_cancel_timer(gesture);
 
+    AxsFanHoldTimerTarget *target = [[AxsFanHoldTimerTarget alloc] init];
+    target.gesture = gesture;
     NSTimeInterval delay = [[AxsFanHoldConfig axs_fanhold_shared] axs_fanhold_holdDuration];
-    __weak UIGestureRecognizer *weakGesture = gesture;
-    dispatch_block_t block = dispatch_block_create(0, ^{
-        UIGestureRecognizer *strongGesture = weakGesture;
-        if (!strongGesture) return;
-        if ([[AxsFanHoldConfig axs_fanhold_shared] axs_fanhold_isEnabled] == NO) return;
-
-        // 手势必须仍在进行中。
-        long long state = axs_fanhold_gesture_state(strongGesture);
-        if (state != 1 && state != 2) return;   // Began / Changed
-
-        // 手指移动过就交给 TrollOpen 的拖动选择。
-        if (axs_fanhold_readBool(strongGesture, "trackingGestureActive")) return;
-
-        id menu = axs_fanhold_find_menu_view(strongGesture);
-        if (!menu) return;
-        if (!axs_fanhold_readBool(menu, "fullyRevealed")) return;
-
-        id item = axs_fanhold_send(menu, "currentHighlightedItem");
-        if (!item) return;
-        if (axs_fanhold_readLongLong(item, "itemKind") != AxsFanHoldItemKindShortcut) return;
-
-        axs_fanhold_run_item(menu, item);
-    });
-    [axs_fanhold_timers() setObject:block forKey:gesture];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), block);
+    NSTimer *timer = [NSTimer timerWithTimeInterval:delay
+                                             target:target
+                                           selector:@selector(axs_fanhold_fire)
+                                           userInfo:nil
+                                            repeats:NO];
+    [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
+    [axs_fanhold_timers() setObject:timer forKey:gesture];
 }
 
 #pragma mark - 状态机 hook
